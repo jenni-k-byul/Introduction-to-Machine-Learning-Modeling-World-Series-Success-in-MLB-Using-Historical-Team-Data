@@ -52,7 +52,7 @@ display(mlb_stats)
 # MODEL 1 - Logistic Regression (Baseline)
 # ============================================================
 
-## Drop columns irrelevant for modeling (including missing columns)
+## Drop columns irrelevant for modeling 
 mlb_stats_cleaned = mlb_stats.drop(["Year", "Tm", "Winner", "fld_Rdrs", "fld_Rdrs/yr", "fld_Rgood", "fld_Rtot", "fld_Rtot/yr", "bat_SF"], axis = 1)
 
 display(mlb_stats_cleaned)
