@@ -1,0 +1,606 @@
+# ============================================================
+# Logistic Regression models: 
+# Baseline, LASSO, TWFE, TWFE + L1
+# ============================================================
+
+# ---------- Import Packages ----------
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+import sklearn.model_selection as skm
+import sklearn.linear_model as skl
+from IPython.display import display
+from sklearn import metrics
+from sklearn.model_selection import (train_test_split,
+                                     StratifiedKFold,
+                                     GridSearchCV)
+from sklearn.linear_model import LogisticRegression, LogisticRegressionCV, RidgeCV
+from sklearn.cross_decomposition import PLSRegression
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.metrics import (mean_absolute_error,
+                             r2_score,
+                             confusion_matrix,
+                             accuracy_score,
+                             ConfusionMatrixDisplay,
+                             classification_report,
+                             average_precision_score,
+                             precision_recall_curve,
+                             auc)
+from ISLP import load_data
+from ISLP.models import ModelSpec as MS
+from ISLP.models import Stepwise, sklearn_selected, sklearn_selection_path
+from functools import partial
+from joblib import dump, load
+
+# ---------- Import Data (shared by all four models) ----------
+
+## Set pandas display option to show all rows
+pd.set_option('display.max_rows', None)
+
+# Laptop
+#mlb_stats = pd.read_csv('')
+
+# Mac
+mlb_stats = pd.read_csv('')
+
+display(mlb_stats)
+
+# ============================================================
+# MODEL 1 - Logistic Regression (Baseline)
+# ============================================================
+
+## Drop columns irrelevant for modeling (including missing columns)
+mlb_stats_cleaned = mlb_stats.drop(["Year", "Tm", "Winner", "fld_Rdrs", "fld_Rdrs/yr", "fld_Rgood", "fld_Rtot", "fld_Rtot/yr", "bat_SF"], axis = 1)
+
+display(mlb_stats_cleaned)
+
+# ---------- Split data (80% Training, 20% Testing) ----------
+
+X = mlb_stats_cleaned.drop(columns = ['WS_win'])
+Y = mlb_stats_cleaned['WS_win']
+
+## Split data
+X_train, X_test, y_train, y_test = train_test_split(X,
+                                                    Y,
+                                                    test_size = 0.2,
+                                                    random_state = 524,
+                                                    stratify = Y)
+
+## Standardize X_train and X_test
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+
+X_test_scaled = scaler.transform(X_test)
+
+# ---------- Logistic Regression ----------
+
+## Define k-fold validation
+K = 10
+
+kfold = StratifiedKFold(K,
+                        random_state = 1110,
+                        shuffle = True)
+
+## Build Logistic Regression model
+log_model = LogisticRegression(C = 1.0,
+                               max_iter = 15000,
+                               class_weight = 'balanced')
+
+logistic_result = log_model.fit(X_train_scaled, y_train)
+
+# ---------- Cross - Validation for C ----------
+
+params = {'C': [0.001, 0.01, 0.1, 1, 10, 100]}
+
+grid_logR = GridSearchCV(log_model,
+                         params,
+                         cv = kfold,
+                         scoring = 'f1')
+
+## Find best C and gamma
+grid_logR.fit(X_train_scaled, y_train)
+
+display(grid_logR.best_params_)
+
+current_C = grid_logR.best_params_['C']
+print(f"Optimal C: {current_C}")
+
+# ---------- Refit Logistic Regression Model Using Optimal C ----------
+
+log_model_opt = LogisticRegression(C = current_C,
+                                   max_iter = 15000,
+                                   class_weight = 'balanced')
+
+logistic_opt_result = log_model_opt.fit(X_train_scaled, y_train)
+
+# ---------- Coefficients ----------
+
+logistic_opt_coef = pd.DataFrame({'Feature': X_train.columns,
+                                  'Coefficient': log_model_opt.coef_[0]})
+
+logistic_opt_coef = logistic_opt_coef.sort_values('Coefficient', ascending = False)
+
+display(logistic_opt_coef.head(10))
+
+# ---------- Predict on Test Data ----------
+
+## Predict trained model on X_test_scaled
+y_pred_logR = log_model_opt.predict(X_test_scaled)
+
+print(confusion_matrix(y_test, y_pred_logR))
+
+print(classification_report(y_test, y_pred_logR))
+
+## Construct Confusion Matrix
+c_matrix = confusion_matrix(y_test, y_pred_logR)
+
+ConfusionMatrixDisplay(c_matrix, display_labels = ['No WS Win', 'WS Win']).plot()
+plt.show()
+
+precision, recall, thresholds = precision_recall_curve(y_test, y_pred_logR)
+
+# Get the predicted probabilities
+y_probs = log_model_opt.predict_proba(X_test_scaled)[:, 1]
+
+# Calculate the precision and recall values
+precision, recall, thresholds = precision_recall_curve(y_test, y_probs)
+
+# Calculate the AUC
+pr_auc_score = auc(recall, precision)
+
+print(f"The PR-AUC Score is: {pr_auc_score:.4f}")
+
+plt.figure(figsize=(8, 6))
+plt.plot(recall,
+         precision,
+         label  =f'Logistic + TWFE (PR-AUC = {pr_auc_score:.2f})',
+         color = 'b')
+
+
+plt.xlabel('Recall')
+plt.ylabel('Precision')
+plt.title('Precision-Recall Curve')
+plt.legend()
+plt.show()
+
+# ---------- Save PR-AUC Globally ----------
+
+## Save PR AUC to a df for global export
+log_raw_df = pd.DataFrame({'precision': precision,
+                           'recall': recall})
+
+display(log_raw_df)
+
+dump(log_raw_df, 'log_raw.joblib')
+
+# ============================================================
+# MODEL 2 - Logistic Regression + LASSO
+# ============================================================
+
+## Drop columns irrelevant for modeling
+mlb_stats_num = mlb_stats.drop(["Year", "Tm", "Winner"], axis = 1)
+
+display(mlb_stats_num)
+
+## Drop fld_Rdrs, fld_Rdrs/yr, fld_Rgood, fld_Rtot, fld_Rtot/yr, and bat_SF columns
+## due to their high number of missing rows
+mlb_stats_cleaned = mlb_stats_num.drop(["fld_Rdrs", "fld_Rdrs/yr", "fld_Rgood", "fld_Rtot", "fld_Rtot/yr", "bat_SF"], axis = 1)
+
+display(mlb_stats_cleaned.head(30))
+
+# ---------- Lasso ----------
+
+## Define X and Y
+X = mlb_stats_cleaned.drop(columns = ['WS_win'])
+
+Y = mlb_stats_cleaned['WS_win']
+
+display(X)
+
+## Define k-fold validation
+K = 10
+
+kfold = StratifiedKFold(K,
+                        random_state = 1110,
+                        shuffle = True)
+
+## Construct a lasso model
+lassoCV = skl.ElasticNetCV(n_alphas = 200,
+                           l1_ratio = 1,    #L1 penalty
+                           cv = kfold,
+                           max_iter = 50000)
+
+
+## Standardize variables
+scaler = StandardScaler()
+
+pipeCV = Pipeline(steps = [('scaler', scaler),
+                           ('lasso', lassoCV)])
+
+## Fit a lasso model
+pipeCV.fit(X, Y)
+
+tuned_lasso = pipeCV.named_steps['lasso']
+print(f"Optimal lambda: {tuned_lasso.alpha_:.4f}")
+
+display(tuned_lasso.coef_)
+
+## Feature importance
+feature_importance = pd.DataFrame({'Feature': X.columns,
+                                   'Coefficient': tuned_lasso.coef_})
+
+display(feature_importance)
+
+## Only keep features that has coefficient != 0
+kept_features = feature_importance[feature_importance['Coefficient'] != 0].sort_values(by = 'Coefficient', ascending = False)
+
+display(kept_features)
+
+# ---------- Logistic Regression + Lasso ----------
+
+## Use features selected by Lasso only
+X_selected = X[kept_features['Feature']]
+
+X_selected = X_selected.dropna(axis = 1)
+
+display(X_selected)
+
+## Split data 80-20
+X_train, X_test, y_train, y_test = train_test_split(X_selected,
+                                                    Y,
+                                                    test_size = 0.2,
+                                                    random_state = 524,
+                                                    stratify = Y)
+
+## Standardize X_train and X_test
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+
+X_test_scaled = scaler.transform(X_test)
+
+# ---------- Baseline Logistic Regression + LASSO ----------
+
+## Fit logistic model
+## Set max_iter to address iteration error
+log_model = LogisticRegression(C = 1,
+                               max_iter = 15000,
+                               class_weight = 'balanced')
+
+logistic_result = log_model.fit(X_train_scaled, y_train)
+
+## Predict trained model on X_test_scaled
+y_pred_logR = log_model.predict(X_test_scaled)
+
+print(classification_report(y_test, y_pred_logR))
+
+# ---------- Cross-Validation for C ----------
+
+C_range = np.logspace(-8, 3, 10)
+
+print(C_range)
+
+parameters = {'C' : C_range}
+
+grid_logR = GridSearchCV(log_model,
+                         parameters,
+                         cv = kfold,
+                         scoring = 'f1')
+
+## Find best C
+grid_logR.fit(X_train_scaled, y_train)
+
+display(grid_logR.best_params_)
+
+print(f"Best CV Score: {grid_logR.best_score_}")
+
+# ---------- Cross-Validation for C - Run 2 ----------
+
+## Save current best C
+current_C = grid_logR.best_params_['C']
+
+print(f"Optimal C: {current_C}")
+
+## Set up new range of C centered around current optimal C
+C_range2 = np.linspace(current_C * 0.5, current_C * 1.5, 20)
+
+print(C_range2)
+
+parameters2 = {'C' : C_range2}
+
+grid_logR2 = GridSearchCV(log_model,
+                          parameters2,
+                          cv = kfold,
+                          scoring = 'f1')
+
+## Find best C
+grid_logR2.fit(X_train_scaled, y_train)
+
+display(grid_logR2.best_params_)
+
+## Save new optimal C
+optimal_C = grid_logR2.best_params_['C']
+
+print(f"Optimal C: {optimal_C}")
+
+print(f"Best CV Score: {grid_logR2.best_score_}")
+
+# ---------- Refit Logistic Regression Model Using Optimal C ----------
+
+log_model_opt = LogisticRegression(C = optimal_C,
+                                   max_iter = 15000,
+                                   class_weight = 'balanced')
+
+logistic_opt_result = log_model_opt.fit(X_train_scaled, y_train)
+
+# ---------- Coefficients ----------
+
+log_reg_opt_coef = pd.DataFrame({'Feature': X_train.columns,
+                                 'Coefficient': log_model_opt.coef_[0]})
+
+log_reg_opt_coef = log_reg_opt_coef.sort_values('Coefficient', ascending = False)
+
+display(log_reg_opt_coef)
+
+# ---------- Prediction - confusion matrix ----------
+
+## Predict trained model on X_test_scaled
+y_pred_log = log_model_opt.predict(X_test_scaled)
+
+print(confusion_matrix(y_test, y_pred_log))
+
+print(classification_report(y_test, y_pred_log))
+
+## Construct Confusion Matrix
+c_matrix = confusion_matrix(y_test, y_pred_log)
+
+ConfusionMatrixDisplay(c_matrix, display_labels=['No WS Win', 'WS Win']).plot()
+plt.show()
+
+# ---------- Prediction - PR AUC ----------
+
+## Get predicted probabilities
+y_pred_opt_pr = log_model_opt.predict_proba(X_test_scaled)[:, 1]
+
+
+## Calculate the precision and recall values for various thresholds
+precision, recall, thresholds = precision_recall_curve(y_test, y_pred_opt_pr)
+
+
+## Calculate the AUC
+pr_auc_score_opt = auc(recall, precision)
+
+print(f"The PR-AUC Score is: {pr_auc_score_opt:.4f}")
+
+plt.figure(figsize = (8, 6))
+
+plt.plot(recall,
+         precision,
+         label = f'Logistic Regression + LASSO (PR-AUC = {pr_auc_score_opt:.2f})',
+         color = 'b')
+
+
+plt.xlabel('Recall')
+plt.ylabel('Precision')
+plt.title('Precision-Recall Curve')
+plt.legend()
+plt.show()
+
+# ---------- Save PR-AUC Globally ----------
+
+## Save PR AUC to a df for global export
+log_lasso_df = pd.DataFrame({'precision': precision,
+                             'recall': recall})
+
+display(log_lasso_df)
+
+dump(log_lasso_df, 'log_lasso.joblib')
+
+# ============================================================
+# MODEL 3 - Logistic Regression with Two-Way Fixed Effects (TWFE)
+# ============================================================
+# References:
+# - https://scikit-learn.org/stable/modules/generated/sklearn.compose.ColumnTransformer.html
+# - https://stackoverflow.com/questions/24195432/fixed-effect-in-pandas-or-statsmodels
+# - https://stats.stackexchange.com/questions/596576/fixed-effects-on-machine-learning-models
+# - https://www.youtube.com/watch?v=9NfSGzuZSo4
+
+## Drop columns irrelevant for modeling (including missing columns)
+## (Year and Tm are kept here to serve as fixed effects)
+mlb_stats_cleaned = mlb_stats.drop(["Winner", "fld_Rdrs", "fld_Rdrs/yr", "fld_Rgood", "fld_Rtot", "fld_Rtot/yr", "bat_SF"], axis = 1)
+
+display(mlb_stats_cleaned)
+
+## Split mlb_stats into X and Y
+X = mlb_stats_cleaned.drop(columns = ['WS_win'])
+Y = mlb_stats_cleaned['WS_win']
+
+## Define fixed_effect columns - Year and Tm (team)
+fixed_effect_cols = ['Year', 'Tm']
+numeric_features = [col for col in X.columns if col not in fixed_effect_cols]
+
+## Build preprocessor
+preprocessor = ColumnTransformer(transformers=[('num', StandardScaler(), numeric_features),
+                                               ('cat', OneHotEncoder(drop = 'first', handle_unknown = 'ignore'), fixed_effect_cols)])
+
+# ---------- Logistic Regression with fixed effect ----------
+
+## Split data
+X_train, X_test, y_train, y_test = train_test_split(X,
+                                                    Y,
+                                                    test_size = 0.2,
+                                                    random_state = 524,
+                                                    stratify = Y)
+
+## Define k-fold validation
+K = 10
+
+kfold = StratifiedKFold(K,
+                        random_state = 1110,
+                        shuffle = True)
+
+C_range = np.logspace(-8, 3, 10)
+
+print(C_range)
+
+log_reg_cv = LogisticRegressionCV(Cs = C_range,
+                                  cv = kfold,
+                                  max_iter = 10000,
+                                  class_weight = 'balanced')
+
+pipe_twfe = Pipeline(steps=[('preprocessor', preprocessor),
+                            ('logistic', log_reg_cv)])
+
+
+pipe_twfe.fit(X_train, y_train)
+
+# Extract feature names from the preprocessor
+cat_features = pipe_twfe.named_steps['preprocessor']\
+               .named_transformers_['cat']\
+               .get_feature_names_out(fixed_effect_cols)
+
+all_features = numeric_features + list(cat_features)
+
+# Get the coefficients from the logistic model
+coeffs = pipe_twfe.named_steps['logistic'].coef_[0]
+
+# Create a clean DataFrame of results
+results = pd.DataFrame({'Feature': all_features,
+                        'Coefficient': coeffs})
+
+results = results.sort_values(by = 'Coefficient',
+                              ascending = False)
+
+display(results)
+
+best_c = pipe_twfe.named_steps['logistic'].C_
+print(f"The optimal regularization strength (C) was: {best_c}")
+
+predictions = pipe_twfe.predict(X_test)
+print(confusion_matrix(y_test, predictions))
+print(classification_report(y_test, predictions))
+
+## Construct Confusion Matrix
+c_matrix_twfe = confusion_matrix(y_test, predictions)
+
+ConfusionMatrixDisplay(c_matrix_twfe, display_labels=['No WS Win', 'WS Win']).plot()
+plt.show()
+
+# Get the predicted probabilities
+y_probs = pipe_twfe.predict_proba(X_test)[:, 1]
+
+# Calculate the precision and recall
+precision, recall, thresholds = precision_recall_curve(y_test, y_probs)
+
+# Calculate AUC
+pr_auc_score = auc(recall, precision)
+
+print(f"The PR-AUC Score is: {pr_auc_score:.4f}")
+
+plt.figure(figsize = (8, 6))
+plt.plot(recall,
+         precision,
+         label  = f'Logistic + TWFE (PR-AUC = {pr_auc_score:.2f})',
+         color = 'b')
+
+
+plt.xlabel('Recall')
+plt.ylabel('Precision')
+plt.title('Precision-Recall Curve')
+plt.legend()
+plt.show()
+
+# ---------- Save PR-AUC Globally ----------
+
+## Save PR AUC to a df for global export
+model_name = "Logistic Regression - TWFE"
+
+log_twfe_df = pd.DataFrame({'precision': precision,
+                            'recall': recall})
+
+display(log_twfe_df)
+
+dump(log_twfe_df, 'log_twfe.joblib')
+
+# ============================================================
+# MODEL 4 - Logistic Regression - fixed effect and balance class_weight (L1 penalty)
+# ============================================================
+
+log_reg_balnced = LogisticRegressionCV(Cs = C_range,
+                                       penalty = 'l1',
+                                       solver = 'saga',
+                                       cv = kfold,
+                                       max_iter = 10000,
+                                       class_weight = 'balanced')
+
+pipe_twfe_bal = Pipeline(steps = [('preprocessor', preprocessor),
+                                  ('logistic', log_reg_balnced)])
+
+
+pipe_twfe_bal.fit(X_train, y_train)
+
+cat_features = pipe_twfe_bal.named_steps['preprocessor'].named_transformers_['cat'].get_feature_names_out(fixed_effect_cols)
+
+all_features = numeric_features + list(cat_features)
+
+coeffs = pipe_twfe_bal.named_steps['logistic'].coef_[0]
+
+best_c = pipe_twfe_bal.named_steps['logistic'].C_
+print(f"The optimal regularization strength (C) was: {best_c}")
+
+# Create a clean DataFrame of results
+results_bal = pd.DataFrame({'Feature': all_features, 'Coefficient': coeffs})
+results_bal = results_bal.sort_values(by = 'Coefficient',
+                                      ascending = False)
+
+
+
+display(results_bal)
+
+predictions2 = pipe_twfe_bal.predict(X_test)
+print(confusion_matrix(y_test, predictions2))
+print(classification_report(y_test, predictions2))
+
+## Construct Confusion Matrix
+c_matrix_twfel1 = confusion_matrix(y_test, predictions2)
+
+ConfusionMatrixDisplay(c_matrix_twfel1, display_labels=['No WS Win', 'WS Win']).plot()
+plt.show()
+
+## Get the predicted probabilities
+y_probs2 = pipe_twfe_bal.predict_proba(X_test)[:, 1]
+
+## Calculate the precision and recall
+precision2, recall2, thresholds2 = precision_recall_curve(y_test, y_probs2)
+
+## Calculate the AUC
+pr_auc_score2 = auc(recall2, precision2)
+
+print(f"The PR-AUC Score is: {pr_auc_score2:.4f}")
+
+plt.figure(figsize = (8, 6))
+plt.plot(recall2,
+         precision2,
+         label = f'Logistic + TWFE + L1 Penalty (PR-AUC = {pr_auc_score2:.2f})',
+         color = 'b')
+
+
+plt.xlabel('Recall')
+plt.ylabel('Precision')
+plt.title('Precision-Recall Curve')
+plt.legend()
+plt.show()
+
+# ---------- Save PR-AUC Globally ----------
+
+## Save PR AUC to a df for global export
+model_name = "Logistic Regression - TWFE/bal"
+
+log_twfe_bal_df = pd.DataFrame({'precision': precision2,
+                                'recall': recall2})
+
+display(log_twfe_bal_df)
+
+dump(log_twfe_bal_df, 'log_twfe_bal.joblib')
