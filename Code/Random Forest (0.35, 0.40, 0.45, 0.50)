@@ -1,0 +1,214 @@
+# ============================================================
+# Random Forest - decision-threshold comparison 
+# (0.35, 0.40, 0.45, 0.50)
+# ============================================================
+
+# ---------- Import Libraries ----------
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from IPython.display import display
+from sklearn.ensemble import RandomForestClassifier as RF
+from sklearn.tree import plot_tree
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (precision_score, recall_score, f1_score, confusion_matrix,
+                             ConfusionMatrixDisplay, classification_report, precision_recall_curve, auc)
+from joblib import dump
+
+# ---------- Import Data ----------
+
+## Set pandas display option to show all rows
+pd.set_option('display.max_rows', None)
+
+mlb_stats = pd.read_csv('')
+
+display(mlb_stats)
+
+## Drop columns irrelevant for modeling (including missing columns)
+mlb_stats_cleaned = mlb_stats.drop(["Year", "Tm", "Winner", "fld_Rdrs", "fld_Rdrs/yr", "fld_Rgood", "fld_Rtot", "fld_Rtot/yr", "bat_SF"], axis = 1)
+
+display(mlb_stats_cleaned)
+
+# ---------- Split Data ----------
+
+## Split mlb_stats into X and Y
+X = mlb_stats_cleaned.drop(columns = ['WS_win'])
+Y = mlb_stats_cleaned['WS_win']
+
+## Split data
+X_train, X_test, y_train, y_test = train_test_split(X,
+                                                    Y,
+                                                    test_size = 0.2,
+                                                    random_state = 524,
+                                                    stratify = Y)
+
+# ---------- Random Forest (not standardized data used) ----------
+
+# Check for number of columns in the new
+print(X_train.shape[1])
+
+feature_names = X_train.columns
+
+## Decision thresholds to compare
+thresholds_to_test = [0.35, 0.4, 0.45, 0.5]
+save_names = {0.35: 'RF3_5', 0.4: 'RF4', 0.45: 'RF4_5', 0.5: 'RF5'}
+
+fitted_rf = {}
+importance_by_max_features = {}
+
+
+def get_rf(max_feat):
+    
+    if max_feat not in fitted_rf:
+        # Fit random forest model
+        # balance the class weight
+        model = RF(max_features = max_feat,
+                   n_estimators = 100,
+                   class_weight = 'balanced',
+                   random_state = 1110).fit(X_train, y_train)
+
+        fitted_rf[max_feat] = {'model': model,
+                               'proba': model.predict_proba(X_test)[:, 1]}
+
+        # Create importance df
+        importance_by_max_features[f'm_{max_feat}'] = (
+            pd.DataFrame({'importance': model.feature_importances_},
+                         index = feature_names)
+            .sort_values(by = 'importance', ascending = False))
+
+    return fitted_rf[max_feat]
+
+
+def evaluate_max_features(max_feat_values, threshold):
+    
+    results = []
+
+    for i in max_feat_values:
+
+        # Predict on test dataset
+        y_predicted = (get_rf(i)['proba'] > threshold).astype('int')
+
+        # Calculate metrics
+        # zero_division = 0 in case 0 win is predicted
+        precision = precision_score(y_test, y_predicted, pos_label = 1, zero_division = 0)
+        recall = recall_score(y_test, y_predicted, pos_label = 1, zero_division = 0)
+        f1 = f1_score(y_test, y_predicted, pos_label = 1, zero_division = 0)
+
+        # Append results
+        results.append({'max_features': i,
+                        'Precision': round(precision, 7),
+                        'Recall': round(recall, 7),
+                        'F1_Score': round(f1, 7)})
+
+    return pd.DataFrame(results)
+
+
+pr_curves = {}        # saved PR-curve data per threshold
+trees_plotted = set() # max_features values whose trees have already been drawn
+
+for threshold in thresholds_to_test:
+
+    print("\n" + "=" * 70)
+    print(f"DECISION THRESHOLD = {threshold}")
+    print("=" * 70)
+
+    # ---------- Filter through wide range of features ----------
+    ## Include max_features = 75
+    iteration = range(1, 76, 3)
+
+    RF_results_df = evaluate_max_features(iteration, threshold)
+    RF_results_df = RF_results_df.sort_values(by = 'F1_Score', ascending = False)
+
+    display(RF_results_df)
+
+    # ---------- Filter through narrower range of features ----------
+    ## Find new range centered around optimal max_feature found above
+    optimal_max_feat = int(RF_results_df.iloc[0]['max_features'])
+    upper_range = min(optimal_max_feat + 11, 75)
+    lower_range = max(1, optimal_max_feat - 10)
+
+    iteration2 = range(lower_range, upper_range)
+    print(iteration2)
+
+    RF_results2_df = evaluate_max_features(iteration2, threshold)
+    RF_results2_df = RF_results2_df.sort_values(by = 'F1_Score', ascending = False)
+
+    display(RF_results2_df)
+
+    # ---------- RF Model Using Optimal max_features ----------
+
+    ## Extract optimal max_feature
+    optimal_max_features = int(RF_results2_df.iloc[0]['max_features'])
+    print(f"Optimal max_features at threshold {threshold}: {optimal_max_features}")
+
+    ## Best model (already fitted above, so no refit is needed)
+    best_RF = get_rf(optimal_max_features)['model']
+
+    ## Visualize first 3 trees 
+    if optimal_max_features not in trees_plotted:
+        trees_plotted.add(optimal_max_features)
+
+        fig, axes = plt.subplots(3, 1, figsize = (10, 30))
+
+        for i, ax in enumerate(axes):
+            plot_tree(
+                best_RF.estimators_[i],
+                feature_names = feature_names.tolist(),
+                class_names = ['No Win', 'Win'],
+                filled = True,
+                max_depth = 2,
+                ax = ax,
+                fontsize = 6
+            )
+            ax.set_title(f"Tree {i + 1}")
+
+        plt.suptitle(f"First 3 Trees in Random Forest (max_features = {optimal_max_features})", fontsize = 14)
+        plt.tight_layout()
+        plt.show()
+    else:
+        print(f"Trees for max_features = {optimal_max_features} were already plotted above.")
+
+    ## Predict on test dataset
+    y_probs_rf = get_rf(optimal_max_features)['proba']
+    y_predicted_best = (y_probs_rf > threshold).astype('int')
+
+    print(classification_report(y_test, y_predicted_best))
+
+    ## Construct Confusion Matrix
+    c_matrix_rf = confusion_matrix(y_test, y_predicted_best)
+
+    disp = ConfusionMatrixDisplay(c_matrix_rf, display_labels = ['No WS Win', 'WS Win']).plot()
+    disp.ax_.set_title(f"Confusion Matrix (threshold = {threshold})")
+    plt.show()
+
+    ## Calculate the precision and recall values for various thresholds
+    precision_rf, recall_rf, thresholds_rf = precision_recall_curve(y_test, y_probs_rf)
+
+    ## Calculate the AUC
+    pr_auc_score_rf = auc(recall_rf, precision_rf)
+    print(f"The PR-AUC Score is: {pr_auc_score_rf:.4f}")
+
+    plt.figure(figsize = (8, 6))
+    plt.plot(recall_rf,
+             precision_rf,
+             label = f'Random Forest, threshold {threshold} (PR-AUC = {pr_auc_score_rf:.2f})',
+             color = 'b')
+
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Precision-Recall Curve')
+    plt.legend()
+    plt.show()
+
+    # ---------- Save PR-AUC Globally ----------
+
+    ## Save PR AUC to a df for global export
+    pr_curves[threshold] = pd.DataFrame({'precision': precision_rf,
+                                         'recall': recall_rf})
+
+    display(pr_curves[threshold])
+
+    dump(pr_curves[threshold], f'{save_names[threshold]}.joblib')
+
+# ---------- Feature importance for every max_features that was fit ----------
+display(importance_by_max_features)
