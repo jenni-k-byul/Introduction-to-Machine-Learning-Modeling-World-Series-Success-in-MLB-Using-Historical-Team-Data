@@ -1,0 +1,251 @@
+# ============================================================
+# EDA - NYY Case Study (single-cell version)
+# ============================================================
+
+# ---------- Load Packages ----------
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from IPython.display import display
+from sklearn import preprocessing
+from sklearn.preprocessing import MinMaxScaler
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+
+# ---------- Load Dataset ----------
+mlb_stats = pd.read_csv('')
+
+display(mlb_stats)
+
+# ============================================================
+# EDA - Dataframe Info
+# ============================================================
+
+## Set pandas display option to show all rows
+pd.set_option('display.max_rows', None)
+
+## Check shape of mlb_stats df
+print("Shape:", mlb_stats.shape)
+
+## Number of obs per each column and type of data
+mlb_stats.info()
+
+## Statistical summary
+display(mlb_stats.describe().T)
+
+## Check for missing values
+display(mlb_stats.isnull().sum())
+
+## Check for any duplicate rows
+duplicate_rows_df = mlb_stats[mlb_stats.duplicated()]
+print("number of duplicate rows: ", duplicate_rows_df.shape)
+
+# ============================================================
+# Correlation Matrix
+# ============================================================
+
+## Drop text columns
+mlb_stats_num = mlb_stats.drop(["Year", "Tm", "Winner"], axis = 1)
+
+display(mlb_stats_num)
+
+## Calculate matrix of correlations
+mlb_corr = mlb_stats_num.corr()
+print(mlb_corr)
+
+## Find correlation higher than 0.8
+## Find correlation lower than -0.8
+threshold_pos = 0.8
+threshold_neg = -0.8
+
+corr_pairs = mlb_corr.unstack().sort_values(ascending = False)
+
+high_corr = corr_pairs[corr_pairs > threshold_pos]
+low_corr = corr_pairs[corr_pairs < threshold_neg]
+
+print(high_corr.to_string())
+print(low_corr.to_string())
+
+## Correlation heatmap
+plt.figure(figsize = (40, 30))
+
+sns.heatmap(mlb_stats_num.corr())
+
+plt.title('Correlation Heatmap')
+
+plt.savefig('mlb_heatmap.png', dpi = 300)
+
+plt.show()
+
+## Correlation with World Series wins
+plt.figure(figsize=(8, 20))
+
+# Get correlations
+target_corr = mlb_stats_num.corr()[['WS_win']].sort_values(by = 'WS_win', ascending = False)
+
+sns.heatmap(target_corr,
+            annot = True,
+            vmin = -1,
+            vmax = 1)
+
+plt.title('Feature Correlation with World Series Wins')
+plt.savefig('WS_win_corr.png', dpi = 300)
+
+plt.show()
+
+# ============================================================
+# VIF
+# ============================================================
+
+X = mlb_stats_num.copy()
+X = X.dropna()
+
+display(X)
+
+vif_data = pd.DataFrame()
+
+vif_data["feature"] = X.columns
+
+vif_data["VIF"] = [variance_inflation_factor(X.values, i)
+                   for i in range(len(X.columns))]
+
+print(vif_data)
+
+vif_data = vif_data.sort_values(by = 'VIF', ascending = False)
+display(vif_data)
+
+print(vif_data["VIF"].mean())
+
+# ============================================================
+# NYY Case Study - EDA of New York Yankees
+# ============================================================
+
+# ---------- Batting Statistics ----------
+
+## Filter batting stats
+NYY_bat = (mlb_stats[mlb_stats['Tm'] == 'New York Yankees']
+           .filter(regex = '^bat_|^Year')
+           .copy()
+          )
+
+col_name_bat = NYY_bat.columns
+
+display(NYY_bat)
+
+## Scale stats for plotting
+scaler = MinMaxScaler(feature_range = (0, 1))
+
+scaled_bat = scaler.fit_transform(NYY_bat)
+
+scaled_batting = pd.DataFrame(scaled_bat, columns = col_name_bat)
+
+# Drop year column
+scaled_batting = scaled_batting.drop(columns = ['Year'])
+
+display(scaled_batting)
+
+plt.figure(figsize = (15, 11))
+
+for col in scaled_batting.columns:
+
+    Year = NYY_bat['Year']
+
+    Y = scaled_batting[col].values
+
+    plt.plot(Year,
+             Y,
+             label = f'{col}')
+
+plt.title('NY Yankess Historical Batting Statistics (scaled)', fontsize = 14)
+plt.xlabel('Year', fontsize = 12)
+plt.ylabel('Scaled Statistics', fontsize = 12)
+plt.legend(loc = 'upper right')
+plt.grid(alpha = 0.3)
+plt.show()
+
+# ---------- Pitching Statistics ----------
+
+## Filter pitching stats
+NYY_pit = (mlb_stats[mlb_stats['Tm'] == 'New York Yankees']
+           .filter(regex = '^pit_|^Year')
+           .copy()
+          )
+
+col_name_pit = NYY_pit.columns
+
+display(NYY_pit)
+
+## Scale stats for plotting
+scaler = MinMaxScaler(feature_range = (0, 1))
+
+scaled_pit = scaler.fit_transform(NYY_pit)
+
+scaled_pitching = pd.DataFrame(scaled_pit, columns = col_name_pit)
+
+# Drop year column
+scaled_pitching = scaled_pitching.drop(columns = ['Year'])
+
+display(scaled_pitching)
+
+plt.figure(figsize = (15, 11))
+
+for col in scaled_pitching.columns:
+
+    Year = NYY_pit['Year']
+
+    Y = scaled_pitching[col].values
+
+    plt.plot(Year,
+             Y,
+             label = f'{col}')
+
+plt.title('NY Yankess Historical Pitching Statistics (scaled)', fontsize = 14)
+plt.xlabel('Year', fontsize = 12)
+plt.ylabel('Scaled Statistics', fontsize = 12)
+plt.legend(loc = 'upper right')
+plt.grid(alpha = 0.3)
+plt.show()
+
+# ---------- Fielding Statistics ----------
+
+## Filter fielding stats
+NYY_fld = (
+    mlb_stats[mlb_stats['Tm'] == 'New York Yankees']
+    .filter(regex = '^fld_|^Year')
+    .copy()
+)
+
+col_name = NYY_fld.columns
+
+display(NYY_fld)
+
+## Scale stats for plotting
+scaler = MinMaxScaler(feature_range = (0, 1))
+
+scaled_fld = scaler.fit_transform(NYY_fld)
+
+scaled_fielding = pd.DataFrame(scaled_fld, columns = col_name)
+
+# Drop year column
+scaled_fielding = scaled_fielding.drop(columns = ['Year'])
+
+display(scaled_fielding)
+
+plt.figure(figsize = (15, 11))
+
+for col in scaled_fielding.columns:
+
+    Year = NYY_fld['Year']
+
+    Y = scaled_fielding[col].values
+
+    plt.plot(Year,
+             Y,
+             label = f'{col}')
+
+plt.title('NY Yankess Historical Fielding Statistics (scaled)', fontsize = 14)
+plt.xlabel('Year', fontsize = 12)
+plt.ylabel('Scaled Statistics', fontsize = 12)
+plt.legend(loc = 'upper right')
+plt.grid(alpha = 0.3)
+plt.show()
