@@ -1,0 +1,322 @@
+# ============================================================
+# SVM - 
+# Radial (RBF) Kernel and Polynomial Kernel
+# ============================================================
+
+# ---------- Import Libraries ----------
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import sklearn.model_selection as skm
+from IPython.display import display
+from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.svm import SVC
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import (auc, precision_recall_curve,
+                             confusion_matrix, ConfusionMatrixDisplay, classification_report)
+from joblib import dump
+
+# ---------- Import Data ----------
+
+## Set pandas display option to show all rows
+pd.set_option('display.max_rows', None)
+
+mlb_stats = pd.read_csv('')
+
+display(mlb_stats)
+
+## Drop columns irrelevant for modeling (including missing columns)
+mlb_stats_cleaned = mlb_stats.drop(["Year", "Tm", "Winner", "fld_Rdrs", "fld_Rdrs/yr", "fld_Rgood", "fld_Rtot", "fld_Rtot/yr", "bat_SF"], axis = 1)
+
+display(mlb_stats_cleaned)
+
+# ---------- Split data ----------
+
+X = mlb_stats_cleaned.drop(columns = ['WS_win'])
+Y = mlb_stats_cleaned['WS_win']
+
+## Split data 80-20
+X_train, X_test, y_train, y_test = train_test_split(X,
+                                                    Y,
+                                                    test_size = 0.2,
+                                                    random_state = 524,
+                                                    stratify = Y)
+
+## Standardize data
+scaler = StandardScaler()
+
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+# ---------- Settings shared by both SVM models ----------
+
+## Define k-fold validation
+K = 10
+
+kfold = StratifiedKFold(K,
+                        random_state = 1110,
+                        shuffle = True)
+
+## Set up range of numbers from 1e-8 to 100 for C
+C_range = np.logspace(-8, 3, 10)
+
+print(C_range)
+
+# ============================================================
+# SVM - Radial Kernel
+# ============================================================
+
+# ---------- Initial SVM model with default C and gamma ----------
+
+# Construct SVM with radial kernel
+svm_rbf = SVC(kernel = "rbf",
+              gamma = 'scale', # default gamma value
+              C = 1.0, # default C value
+              class_weight = 'balanced')  # balance out class imbalance of this dataset
+
+## Fit the SVM model
+svm_rbf.fit(X_train_scaled, y_train)
+
+## Predict the response on test dataset
+y_pred_svm = svm_rbf.predict(X_test_scaled)
+
+print(classification_report(y_test, y_pred_svm))
+
+# ---------- Cross validation for C and gamma ----------
+
+## Set up range of numbers from 10^-8 to 10^2 for gamma
+gamma_range = np.logspace(-8, 2, 10)
+
+print(gamma_range)
+
+## Set up GridSearch
+parameters = {'C' : C_range,
+              'gamma' : gamma_range,
+              'kernel' : ["rbf"]}
+
+grid_rbf = skm.GridSearchCV(svm_rbf,
+                            parameters,
+                            refit = True,
+                            cv = kfold,
+                            scoring = 'f1')
+
+## Find best C and gamma
+grid_rbf.fit(X_train_scaled, y_train)
+
+display(grid_rbf.best_params_)
+
+print(f"Best CV Score: {grid_rbf.best_score_}")
+
+# ---------- Run second cross validation to narrow down the C and gamma ----------
+
+## Set up range of numbers centered around optimal C
+current_C = grid_rbf.best_params_['C']
+
+C_range2 = np.linspace(current_C * 0.5, current_C * 1.5, 20)
+
+print(C_range2)
+
+## Set up range of numbers centered around optimal gamma
+current_best = grid_rbf.best_params_['gamma']
+
+gamma_range2 = np.linspace(current_best * 0.5, current_best * 1.5, 20)
+
+print(gamma_range2)
+
+parameters2 = {'C' : C_range2,
+               'gamma' : gamma_range2,
+               'kernel' : ["rbf"]}
+
+grid_rbf2 = skm.GridSearchCV(svm_rbf,
+                             parameters2,
+                             refit = True,
+                             cv = kfold,
+                             scoring = 'f1')
+
+## Find best C and gamma
+grid_rbf2.fit(X_train_scaled, y_train)
+
+display(grid_rbf2.best_params_)
+
+print(f"Best CV Score: {grid_rbf2.best_score_}")
+
+## Update current best C and gamma
+optimal_C = grid_rbf2.best_params_['C']
+optimal_gamma = grid_rbf2.best_params_['gamma']
+
+
+print(f"Optimal C: {optimal_C}")
+print(f"Optimal gamma: {optimal_gamma}")
+
+# ---------- Fit new SVM with optimal C and gamma ----------
+
+## Fit SVM with radial kernel using identified optimal values
+svm_rbf_optimal = SVC(C = optimal_C,
+                      gamma = optimal_gamma,
+                      kernel = "rbf",
+                      class_weight = 'balanced',
+                      probability = True) # For PR AUC plot
+
+svm_rbf_optimal.fit(X_train_scaled, y_train)
+
+## Predict the response on test dataset
+y_pred_svm_optimal = svm_rbf_optimal.predict(X_test_scaled)
+
+print(classification_report(y_test, y_pred_svm_optimal))
+
+## Construct Confusion Matrix
+c_matrix_svm = confusion_matrix(y_test, y_pred_svm_optimal)
+
+ConfusionMatrixDisplay(c_matrix_svm, display_labels=['No WS Win', 'WS Win']).plot()
+plt.show()
+
+## Get the predicted probabilities
+y_probs_svm = svm_rbf_optimal.predict_proba(X_test_scaled)[:, 1]
+
+## Calculate the precision and recall
+precision_svm, recall_svm, thresholds_svm = precision_recall_curve(y_test, y_probs_svm)
+
+## Calculate the AUC
+pr_auc_score_svm = auc(recall_svm, precision_svm)
+
+print(f"The PR-AUC Score is: {pr_auc_score_svm:.4f}")
+
+plt.figure(figsize = (8, 6))
+plt.plot(recall_svm,
+         precision_svm,
+         label = f'SVM + RBF (PR-AUC = {pr_auc_score_svm:.2f})',
+         color = 'b')
+
+
+plt.xlabel('Recall')
+plt.ylabel('Precision')
+plt.title('Precision-Recall Curve')
+plt.legend()
+plt.show()
+
+# ---------- Save PR-AUC Globally ----------
+
+## Save PR AUC to a df for global export
+model_name = "SVM - RBF Kernel"
+
+svm_auc_df = pd.DataFrame({'precision': precision_svm,
+                           'recall': recall_svm})
+
+display(svm_auc_df)
+
+dump(svm_auc_df, 'svm_auc.joblib')
+
+# ============================================================
+# SVM - Polynomial Kernel
+# ============================================================
+
+# ---------- Initial SVM model with default C and degree = 2 ----------
+
+# Construct SVM with polynomial kernel
+svm_poly = SVC(kernel = "poly",
+               C = 1.0, # default C value
+               class_weight = 'balanced',  # balance out class imbalance of this dataset
+               degree = 2)
+
+## Fit the SVM model
+svm_poly.fit(X_train_scaled, y_train)
+
+## Predict the response on test dataset
+y_pred_poly = svm_poly.predict(X_test_scaled)
+
+print(classification_report(y_test, y_pred_poly))
+
+# ---------- Cross validation for C and degree ----------
+## (C_range is reused from above)
+
+## Check degree from 1 - 10
+degree_range = np.arange(1, 11)
+
+print(degree_range)
+
+## Set up GridSearch
+parameters = {'C' : C_range,
+              'degree' : degree_range,
+              'kernel' : ["poly"]}
+
+grid_poly = skm.GridSearchCV(svm_poly,
+                             parameters,
+                             refit = True,
+                             cv = kfold,
+                             scoring = 'f1')
+
+## Find best C and degree
+grid_poly.fit(X_train_scaled, y_train)
+
+display(grid_poly.best_params_)
+
+print(f"Best CV Score: {grid_poly.best_score_}")
+
+## Save optimal parameters
+optimal_C = grid_poly.best_params_['C']
+optimal_degree = grid_poly.best_params_['degree']
+
+print(optimal_C)
+print(optimal_degree)
+
+# ---------- Fit new SVM with optimal C and optimal degree ----------
+
+## Fit SVM with polynomial kernel using optimal C and degree
+svm_poly_optimal = SVC(C = optimal_C,
+                       kernel = "poly",
+                       degree = optimal_degree,
+                       class_weight = 'balanced',
+                       probability = True) # For PR AUC plot
+
+svm_poly_optimal.fit(X_train_scaled, y_train)
+
+## Predict the response for on test dataset
+y_pred_poly_optimal = svm_poly_optimal.predict(X_test_scaled)
+
+print(classification_report(y_test, y_pred_poly_optimal))
+
+## Construct Confusion Matrix
+c_matrix_poly = confusion_matrix(y_test, y_pred_poly_optimal)
+
+ConfusionMatrixDisplay(c_matrix_poly, display_labels=['No WS Win', 'WS Win']).plot()
+plt.show()
+
+## Get the predicted probabilities
+y_probs_poly = svm_poly_optimal.predict_proba(X_test_scaled)[:, 1]
+
+## Calculate the precision and recall
+precision_poly, recall_poly, thresholds_poly = precision_recall_curve(y_test, y_probs_poly)
+
+## Calculate the AUC
+pr_auc_score_poly = auc(recall_poly, precision_poly)
+
+print(f"The PR-AUC Score is: {pr_auc_score_poly:.4f}")
+
+plt.figure(figsize = (8, 6))
+plt.plot(recall_poly,
+         precision_poly,
+         label = f'SVM + Polynomial (d = {optimal_degree}) (PR-AUC = {pr_auc_score_poly:.2f})',
+         color = 'b')
+
+plt.plot(recall_svm,
+         precision_svm,
+         label = f'SVM + RBF (PR-AUC = {pr_auc_score_svm:.2f})',
+         color = 'g')
+
+plt.xlabel('Recall')
+plt.ylabel('Precision')
+plt.title('Precision-Recall Curve')
+plt.legend()
+plt.show()
+
+# ---------- Save PR-AUC Globally ----------
+
+## Save PR AUC to a df for global export
+model_name = "SVM - Poly(2) Kernel"
+
+svmpoly_auc_df = pd.DataFrame({'precision': precision_poly,
+                               'recall': recall_poly})
+
+display(svmpoly_auc_df)
+
+dump(svmpoly_auc_df, 'svmpoly_auc.joblib')
