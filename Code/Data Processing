@@ -1,0 +1,208 @@
+# ============================================================
+# Merge Baseball-Reference seasonal data and
+# combine with World Series outcome data
+# ============================================================
+
+# ---------- Load Packages ----------
+import os
+import glob
+import pandas as pd
+import numpy as np
+from IPython.display import display
+
+# ============================================================
+# STEP 1 - Merge Seasonal Data by Year (Baseball-Reference Datasets)
+# ============================================================
+
+## Group stats by year
+def group_files_by_year_from_name(directory_path):
+
+    files = glob.glob(os.path.join(directory_path, '*.*'))
+
+    files_by_year = {}
+
+    for file in files:
+        filename = os.path.basename(file)
+
+        try:
+            year_str = filename[0:4]
+            year = int(year_str)
+
+            if year not in files_by_year:
+                files_by_year[year] = []
+
+            files_by_year[year].append(file)
+
+        except (ValueError, IndexError):
+            print(f"Could not extract year from filename: {filename}")
+            continue
+
+    return files_by_year
+
+
+## Set path to folder with seasonal stats from Baseball-Reference
+files_grouped = group_files_by_year_from_name('')
+
+display(files_grouped)
+
+print(len(files_grouped))
+
+
+def combine_files_for_each_year(files_by_year, output_directory):
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+
+    for year, files_list in files_by_year.items():
+
+        dfs = []
+
+        for file_path in files_list:
+            df = pd.read_html(file_path)[0]
+
+            # Remove League Average row
+            df = df[df['Tm'] != 'League Average']
+
+            # Drop rows with no team (total row)
+            df = df.dropna(subset=['Tm'])
+
+            # Add year column
+            df['Year'] = year
+
+            # Add prefix to each stat for improved interpretability
+            filename = os.path.basename(file_path).lower()
+
+            if 'batting' in filename:
+                df = df.add_prefix('bat_')
+                df = df.rename(columns = {'bat_Tm': 'Tm', 'bat_Year': 'Year'})
+            elif 'fielding' in filename:
+                df = df.add_prefix('fld_')
+                df = df.rename(columns = {'fld_Tm': 'Tm', 'fld_Year': 'Year'})
+            elif 'pitching' in filename:
+                df = df.add_prefix('pit_')
+                df = df.rename(columns = {'pit_Tm': 'Tm', 'pit_Year': 'Year'})
+
+            dfs.append(df)
+
+        # Merge all three types of stats horizontally on team name and year
+        combined = dfs[0]
+
+        for df in dfs[1:]:
+            combined = combined.merge(df, on=['Tm', 'Year'])
+
+        output_path = os.path.join(output_directory, f"complete_stat_{year}.csv")
+        combined.to_csv(output_path, index = False)
+
+        print(f"Created: {output_path} — {combined.shape[0]} teams, {combined.shape[1]} columns")
+
+
+## Set output directory and run the merge function
+output_dir = ''
+
+combine_files_for_each_year(files_grouped, output_dir)
+
+
+## Remove old files to start over
+
+# old_files = glob.glob('')
+# for f in old_files:
+#     os.remove(f)
+# print("Old files deleted")
+
+
+## Check merged file
+stat_1950 = pd.read_csv('')
+
+display(stat_1950)
+
+# ============================================================
+# STEP 2 - Combine Seasonal Data and WS Outcome Data Into One File
+# ============================================================
+
+# ---------- Merge Yearly Dataset Into One ----------
+
+## Check csv files before merging
+file_path = ''
+
+# list all the files from the directory
+file_list = os.listdir(file_path)
+display(file_list)
+
+print(len(file_list))
+
+csv_files = glob.glob(os.path.join(file_path, '*.csv'))
+
+display(csv_files)
+
+print(len(csv_files))
+
+## Combine yearly datasets into one
+complete_df = pd.concat([pd.read_csv(f) for f in csv_files], ignore_index = True)
+
+display(complete_df)
+
+## Rearrange columns so that the Year column is at the front
+columns = ['Year'] + [col for col in complete_df.columns if col != 'Year']
+
+complete_df = complete_df.reindex(columns = columns)
+
+display(complete_df)
+
+complete_df.to_csv("complete_stats.csv", encoding = 'utf-8', index = False)
+
+df_test = pd.read_csv('complete_stats.csv')
+
+display(df_test)
+
+# ---------- WS Outcome Dataset (ESPN) ----------
+
+## Set path to folder with Historical WS Winners Dataset (From ESPN)
+WS_winners = pd.read_csv('')
+
+display(WS_winners)
+
+## Create empty column for winner
+WS_winners["Winner"] = ""
+
+display(WS_winners)
+
+## Extract WS winner by final score
+WS_winners['Winner'] = np.where(WS_winners['Wins'] > WS_winners['Wins.1'],
+                                WS_winners['AL Winner'],
+                                WS_winners['NL Winner'])
+
+display(WS_winners)
+
+WS_winner_by_year = WS_winners.drop(["AL Winner", "Wins", "Wins.1", "NL Winner", "Series MVP"], axis = 1)
+
+WS_winner_by_year.reset_index()
+
+WS_winner_by_year = WS_winner_by_year.dropna(axis = 0)
+
+display(WS_winner_by_year)
+
+# ---------- Combine Both Datasets ----------
+
+complete_stat_final = complete_df.copy()
+
+display(complete_stat_final)
+
+complete_stat_final['Year'] = complete_stat_final['Year'].astype(int)
+WS_winner_by_year['Year'] = WS_winner_by_year['Year'].astype(int)
+
+## Merge two datasets
+complete_stat_final = complete_stat_final.merge(WS_winner_by_year, left_on = "Year", right_on = "Year")
+
+display(complete_stat_final)
+
+## Binary coding for WS outcome
+## 0 = Did not win
+## 1 = Won the World Series
+complete_stat_final['WS_win'] = np.where(complete_stat_final["Tm"] == complete_stat_final["Winner"],
+                                         1,
+                                         0)
+
+display(complete_stat_final)
+
+print(complete_stat_final.head(30))
+
+complete_stat_final.to_csv("complete_mlb_stats", encoding = 'utf-8', index = False)
